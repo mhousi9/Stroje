@@ -486,10 +486,10 @@ function renderItemGroup(itemOrNull, entries) {
       ${isOpen ? `
         <div class="item-body">
           ${entries.length > 0 ? `<button class="item-icon-btn" onclick="toggleBulkMode('${key}')">${bulkActiveHere ? 'Zrušit výběr' : 'Vybrat více'}</button>` : ''}
+          ${bulkBar}
           ${entries.length === 0 ? `<div class="empty-state-small">Zatím žádné záznamy.</div>` :
             `<div class="entry-list">${entries.map(e => renderEntryCard(e, false, bulkActiveHere)).join('')}</div>`}
           <button class="add-entry-in-item" onclick="openNewEntry('${state.categoryId}', ${itemOrNull ? `'${itemOrNull.id}'` : 'null'})">+ Přidat záznam sem</button>
-          ${bulkBar}
         </div>
       ` : ''}
     </div>
@@ -499,16 +499,18 @@ function renderItemGroup(itemOrNull, entries) {
 function renderBulkBar() {
   const items = state.itemsByCat[state.categoryId] || [];
   return `
-    <div class="bulk-bar">
-      <div class="bulk-count">${state.bulkSelected.size} vybráno</div>
-      <button class="bulk-move-btn" ${state.bulkSelected.size < 2 ? 'disabled' : ''} onclick="mergeBulkSelected()" title="Spojí text i fotky vybraných záznamů do jednoho">🔗 Sloučit do jednoho</button>
-    </div>
-    <div class="bulk-bar">
-      <select id="bulkTargetSelect" class="bulk-select">
-        ${items.length === 0 ? `<option value="">Nejdřív vytvoř položku</option>` :
-          items.map(it => `<option value="${it.id}">${escapeHtml(it.name)}</option>`).join('')}
-      </select>
-      <button class="bulk-move-btn" ${items.length === 0 || state.bulkSelected.size === 0 ? 'disabled' : ''} onclick="moveBulkSelected()">Přesunout</button>
+    <div class="bulk-bar-sticky">
+      <div class="bulk-bar">
+        <div class="bulk-count">${state.bulkSelected.size} vybráno</div>
+        <button class="bulk-move-btn" ${state.bulkSelected.size < 2 ? 'disabled' : ''} onclick="mergeBulkSelected()" title="Spojí text i fotky vybraných záznamů do jednoho">🔗 Sloučit do jednoho</button>
+      </div>
+      <div class="bulk-bar">
+        <select id="bulkTargetSelect" class="bulk-select">
+          ${items.length === 0 ? `<option value="">Nejdřív vytvoř položku</option>` :
+            items.map(it => `<option value="${it.id}">${escapeHtml(it.name)}</option>`).join('')}
+        </select>
+        <button class="bulk-move-btn" ${items.length === 0 || state.bulkSelected.size === 0 ? 'disabled' : ''} onclick="moveBulkSelected()">Přesunout</button>
+      </div>
     </div>
   `;
 }
