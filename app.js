@@ -182,6 +182,7 @@ let state = {
   itemsByCat: {},
   expandedItems: new Set(['unassigned']),
   bulkMode: false,
+  bulkGroupKey: null,
   bulkSelected: new Set()
 };
 
@@ -459,7 +460,8 @@ function renderItemGroup(itemOrNull, entries) {
   const isOpen = state.expandedItems.has(key);
   const name = itemOrNull ? itemOrNull.name : 'Nezařazené';
   const isUnassigned = !itemOrNull;
-  const bulkBar = (isUnassigned && state.bulkMode) ? renderBulkBar() : '';
+  const bulkActiveHere = state.bulkMode && state.bulkGroupKey === key;
+  const bulkBar = bulkActiveHere ? renderBulkBar() : '';
 
   const styleParts = [];
   if (itemOrNull && itemOrNull.color) styleParts.push(`background:${itemOrNull.color}`);
@@ -478,14 +480,14 @@ function renderItemGroup(itemOrNull, entries) {
           <button class="item-icon-btn danger" onclick="event.stopPropagation(); deleteItemGroup('${itemOrNull.id}')" title="Smazat položku">🗑</button>
           <span class="item-drag-handle" data-id="${itemOrNull.id}" onclick="event.stopPropagation()">⠿</span>
         ` : `
-          ${isOpen && entries.length > 0 ? `<button class="item-icon-btn" onclick="event.stopPropagation(); toggleBulkMode()">${state.bulkMode ? 'Zrušit výběr' : 'Vybrat více'}</button>` : ''}
           ${entries.length > 0 ? `<button class="item-icon-btn danger" onclick="event.stopPropagation(); deleteUnassigned()" title="Smazat vše nezařazené">🗑</button>` : ''}
         `}
       </div>
       ${isOpen ? `
         <div class="item-body">
+          ${entries.length > 0 ? `<button class="item-icon-btn" onclick="toggleBulkMode('${key}')">${bulkActiveHere ? 'Zrušit výběr' : 'Vybrat více'}</button>` : ''}
           ${entries.length === 0 ? `<div class="empty-state-small">Zatím žádné záznamy.</div>` :
-            `<div class="entry-list">${entries.map(e => renderEntryCard(e, false, isUnassigned && state.bulkMode)).join('')}</div>`}
+            `<div class="entry-list">${entries.map(e => renderEntryCard(e, false, bulkActiveHere)).join('')}</div>`}
           <button class="add-entry-in-item" onclick="openNewEntry('${state.categoryId}', ${itemOrNull ? `'${itemOrNull.id}'` : 'null'})">+ Přidat záznam sem</button>
           ${bulkBar}
         </div>
@@ -499,6 +501,9 @@ function renderBulkBar() {
   return `
     <div class="bulk-bar">
       <div class="bulk-count">${state.bulkSelected.size} vybráno</div>
+      <button class="bulk-move-btn" ${state.bulkSelected.size < 2 ? 'disabled' : ''} onclick="mergeBulkSelected()" title="Spojí text i fotky vybraných záznamů do jednoho">🔗 Sloučit do jednoho</button>
+    </div>
+    <div class="bulk-bar">
       <select id="bulkTargetSelect" class="bulk-select">
         ${items.length === 0 ? `<option value="">Nejdřív vytvoř položku</option>` :
           items.map(it => `<option value="${it.id}">${escapeHtml(it.name)}</option>`).join('')}
@@ -699,9 +704,15 @@ async function deleteUnassigned() {
   render();
 }
 
-// ===================== BULK MOVE =====================
-function toggleBulkMode() {
-  state.bulkMode = !state.bulkMode;
+// ===================== BULK MOVE / MERGE =====================
+function toggleBulkMode(groupKey) {
+  if (state.bulkMode && state.bulkGroupKey === groupKey) {
+    state.bulkMode = false;
+    state.bulkGroupKey = null;
+  } else {
+    state.bulkMode = true;
+    state.bulkGroupKey = groupKey;
+  }
   state.bulkSelected = new Set();
   render();
 }
@@ -721,10 +732,41 @@ async function moveBulkSelected() {
   toUpdate.forEach(e => { e.itemId = targetItemId; });
   await idbPutMany('entries', toUpdate);
   state.bulkMode = false;
+  state.bulkGroupKey = null;
   state.bulkSelected = new Set();
   state.expandedItems.add(targetItemId);
   await loadAll();
   render();
+}
+
+async function mergeBulkSelected() {
+  const ids = Array.from(state.bulkSelected);
+  if (ids.length < 2) return;
+  if (!confirm(`Sloučit vybraných ${ids.length} záznamů do jednoho? Text i fotky se spojí, ostatní záznamy zmizí (jejich obsah zůstane v tom sloučeném). Půjde to pak ještě ručně doladit.`)) return;
+
+  const selected = state.allEntries
+    .filter(e => ids.includes(e.id))
+    .sort((a, b) => (a.order || 0) - (b.order || 0));
+  const base = selected[0];
+  const mergedText = selected.map(e => e.text).filter(t => t && t.trim()).join('\n\n');
+  const mergedImages = selected.flatMap(e => e.images || []);
+  const mergedVideos = selected.flatMap(e => e.videos || []);
+
+  base.text = mergedText;
+  base.images = mergedImages;
+  base.videos = mergedVideos;
+  base.updatedAt = Date.now();
+  await idbPut('entries', base);
+
+  for (const e of selected.slice(1)) {
+    await idbDelete('entries', e.id);
+  }
+
+  state.bulkMode = false;
+  state.bulkGroupKey = null;
+  state.bulkSelected = new Set();
+  await loadAll();
+  openEditEntry(base.id);
 }
 
 // ===================== NAVIGATION =====================
@@ -740,6 +782,7 @@ function openCategory(id) {
   state.searchTerm = '';
   state.expandedItems = new Set(['unassigned']);
   state.bulkMode = false;
+  state.bulkGroupKey = null;
   state.bulkSelected = new Set();
   render();
 }
@@ -1298,7 +1341,7 @@ Object.assign(window, {
   confirmDeleteEntry, clearSearch, openLightbox,
   openBackup, exportBackup, importBackup,
   toggleItem, openNewItem, renameItem, deleteItemGroup, deleteUnassigned,
-  toggleBulkMode, toggleBulkSelect, moveBulkSelected,
+  toggleBulkMode, toggleBulkSelect, moveBulkSelected, mergeBulkSelected,
   openColorPicker, applyCategoryColor, applyCategoryTextColor, resetCategoryColor,
   openItemColorPicker, applyItemColor, applyItemTextColor, resetItemColor,
   openVoiceRecorder, voiceStartRecording, voiceStopRecording, voiceReset, voiceTranscribe
