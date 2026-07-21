@@ -248,6 +248,7 @@ function renderHome() {
   app.innerHTML = `
     <header class="topbar">
       <div class="topbar-title">🔧 Údržba strojů</div>
+      <button class="icon-btn" onclick="openHomeExportPicker()" title="Export do PDF">📄</button>
       <button class="icon-btn" onclick="openBackup()" title="Záloha">⇅</button>
     </header>
     <div class="search-bar">
@@ -443,6 +444,7 @@ function renderCategory() {
     <main class="content">
       <div class="cat-toolbar">
         <button class="toolbar-btn" onclick="openNewItem('${state.categoryId}')">+ Položka</button>
+        <button class="toolbar-btn" onclick="openExportPicker()">📄 Export</button>
       </div>
       <div class="item-group-list">
         ${groupsHtml}
@@ -1071,6 +1073,253 @@ async function addVideos(event) {
 function removeImage(i) { formDraft.images.splice(i, 1); hydrateFormMedia(); }
 function removeVideo(i) { formDraft.videos.splice(i, 1); hydrateFormMedia(); }
 
+// ===================== PDF EXPORT (for NotebookLM etc.) =====================
+function openHomeExportPicker() {
+  const div = document.createElement('div');
+  div.className = 'modal-overlay';
+  div.innerHTML = `
+    <div class="modal">
+      <div class="modal-title">📄 Export do PDF</div>
+      <p class="modal-text">Vyber stroje, které chceš dostat do jednoho PDF souboru (s texty i fotkami) — jeden, víc, nebo úplně všechny.</p>
+      <div class="export-check-list">
+        ${state.categories.map(c => {
+          const count = (state.entriesByCat[c.id] || []).length;
+          return `
+            <label class="export-check-row">
+              <input type="checkbox" class="export-check-home" value="${c.id}" />
+              <span>${escapeHtml(c.name)}</span>
+              <span class="export-check-count">${count}</span>
+            </label>
+          `;
+        }).join('')}
+      </div>
+      <button class="modal-btn" onclick="exportSelectAllHome()">Vybrat vše</button>
+      <button class="modal-btn primary" onclick="runHomeExportPdf()">Vygenerovat PDF</button>
+      <button class="modal-btn" onclick="this.closest('.modal-overlay').remove()">Zrušit</button>
+      <div id="exportProgress" class="voice-progress"></div>
+    </div>
+  `;
+  document.body.appendChild(div);
+}
+
+function exportSelectAllHome() {
+  document.querySelectorAll('.export-check-home').forEach(el => { el.checked = true; });
+}
+
+async function runHomeExportPdf() {
+  const checkedCatIds = Array.from(document.querySelectorAll('.export-check-home:checked')).map(el => el.value);
+  const progressEl = document.getElementById('exportProgress');
+  if (!checkedCatIds.length) {
+    if (progressEl) progressEl.textContent = 'Vyber aspoň jeden stroj.';
+    return;
+  }
+  if (progressEl) progressEl.textContent = 'Připravuji PDF…';
+
+  try {
+    const sections = [];
+    for (const catId of checkedCatIds) {
+      const cat = state.categories.find(c => c.id === catId);
+      if (!cat) continue;
+      const items = state.itemsByCat[catId] || [];
+      const allEntries = state.entriesByCat[catId] || [];
+      sections.push({ heading: cat.name, level: 1 });
+      items.forEach(it => {
+        const groupEntries = allEntries.filter(e => e.itemId === it.id);
+        if (groupEntries.length) sections.push({ heading: it.name, level: 2, entries: groupEntries });
+      });
+      const unassigned = allEntries.filter(e => !e.itemId);
+      if (unassigned.length) sections.push({ heading: 'Nezařazené', level: 2, entries: unassigned });
+    }
+
+    const title = checkedCatIds.length === state.categories.length
+      ? 'Údržba strojů — kompletní export'
+      : 'Údržba strojů — export';
+    const filenameBase = checkedCatIds.length === 1
+      ? (state.categories.find(c => c.id === checkedCatIds[0]) || {}).name || 'export'
+      : `vyber-${checkedCatIds.length}-stroju`;
+
+    await buildAndSavePdf(sections, title, filenameBase, progressEl);
+    document.querySelectorAll('.modal-overlay').forEach(el => el.remove());
+  } catch (err) {
+    if (progressEl) progressEl.textContent = 'Export se nepovedl — zkontroluj internet (knihovna pro PDF se stahuje z webu) a zkus to znovu.';
+  }
+}
+
+function openExportPicker() {
+  const items = state.itemsByCat[state.categoryId] || [];
+  const allEntries = state.entriesByCat[state.categoryId] || [];
+  const unassignedCount = allEntries.filter(e => !e.itemId).length;
+  const cat = state.categories.find(c => c.id === state.categoryId);
+
+  const rows = [];
+  items.forEach(it => {
+    const count = allEntries.filter(e => e.itemId === it.id).length;
+    rows.push({ key: it.id, label: it.name, count });
+  });
+  if (unassignedCount > 0) rows.push({ key: 'unassigned', label: 'Nezařazené', count: unassignedCount });
+
+  const div = document.createElement('div');
+  div.className = 'modal-overlay';
+  div.innerHTML = `
+    <div class="modal">
+      <div class="modal-title">📄 Export do PDF — ${escapeHtml(cat ? cat.name : '')}</div>
+      <p class="modal-text">Vyber položky, které chceš dostat do jednoho PDF souboru (s texty i fotkami). Jde vybrat jednu, víc, nebo úplně všechny.</p>
+      <div class="export-check-list">
+        ${rows.length === 0 ? `<div class="hint">Zatím tu nejsou žádné záznamy.</div>` : rows.map(r => `
+          <label class="export-check-row">
+            <input type="checkbox" class="export-check" value="${r.key}" />
+            <span>${escapeHtml(r.label)}</span>
+            <span class="export-check-count">${r.count}</span>
+          </label>
+        `).join('')}
+      </div>
+      ${rows.length > 0 ? `<button class="modal-btn" onclick="exportSelectAll()">Vybrat vše</button>` : ''}
+      <button class="modal-btn primary" onclick="runExportPdf()">Vygenerovat PDF</button>
+      <button class="modal-btn" onclick="this.closest('.modal-overlay').remove()">Zrušit</button>
+      <div id="exportProgress" class="voice-progress"></div>
+    </div>
+  `;
+  document.body.appendChild(div);
+}
+
+function exportSelectAll() {
+  document.querySelectorAll('.export-check').forEach(el => { el.checked = true; });
+}
+
+function urlToDataInfo(url) {
+  return new Promise((resolve, reject) => {
+    fetch(url).then(r => r.blob()).then(blob => {
+      const reader = new FileReader();
+      reader.onloadend = () => {
+        const img = new Image();
+        img.onload = () => resolve({ dataUrl: reader.result, width: img.naturalWidth, height: img.naturalHeight, isPng: blob.type.includes('png') });
+        img.onerror = () => reject(new Error('img decode failed'));
+        img.src = reader.result;
+      };
+      reader.onerror = reject;
+      reader.readAsDataURL(blob);
+    }).catch(reject);
+  });
+}
+
+async function buildAndSavePdf(sections, docTitle, filenameBase, progressEl) {
+  const { jsPDF } = await import('https://cdn.jsdelivr.net/npm/jspdf@2.5.2/+esm');
+  const doc = new jsPDF({ unit: 'pt', format: 'a4' });
+  const pageW = doc.internal.pageSize.getWidth();
+  const pageH = doc.internal.pageSize.getHeight();
+  const margin = 40;
+  const contentW = pageW - margin * 2;
+  let y = margin;
+
+  function ensureSpace(neededHeight) {
+    if (y + neededHeight > pageH - margin) {
+      doc.addPage();
+      y = margin;
+    }
+  }
+
+  doc.setFontSize(18);
+  doc.setFont(undefined, 'bold');
+  const titleLines = doc.splitTextToSize(docTitle, contentW);
+  doc.text(titleLines, margin, y);
+  y += titleLines.length * 22 + 14;
+  doc.setFont(undefined, 'normal');
+
+  for (const section of sections) {
+    const level = section.level || 2;
+    if (level === 1) {
+      ensureSpace(46);
+      y += 10;
+      doc.setDrawColor(230, 168, 60);
+      doc.setLineWidth(1.2);
+      doc.line(margin, y, pageW - margin, y);
+      y += 20;
+      doc.setFontSize(16);
+      doc.setFont(undefined, 'bold');
+      doc.text(section.heading, margin, y);
+      y += 22;
+      doc.setFont(undefined, 'normal');
+      doc.setFontSize(10.5);
+      continue;
+    }
+
+    ensureSpace(30);
+    y += 6;
+    doc.setFontSize(13);
+    doc.setFont(undefined, 'bold');
+    doc.text(section.heading, margin, y);
+    y += 18;
+    doc.setFont(undefined, 'normal');
+    doc.setFontSize(10.5);
+
+    for (const entry of (section.entries || [])) {
+      if (progressEl) progressEl.textContent = `Zpracovávám: ${section.heading}…`;
+      const text = (entry.text || '').trim();
+      if (text) {
+        const lines = doc.splitTextToSize(text, contentW);
+        ensureSpace(lines.length * 13 + 6);
+        doc.text(lines, margin, y);
+        y += lines.length * 13 + 6;
+      }
+      for (const img of (entry.images || [])) {
+        try {
+          const url = await resolveMediaUrl(img);
+          if (!url) continue;
+          const info = await urlToDataInfo(url);
+          let w = contentW * 0.6;
+          let h = w * (info.height / info.width);
+          const maxH = pageH - margin * 2;
+          if (h > maxH) { h = maxH; w = h * (info.width / info.height); }
+          ensureSpace(h + 10);
+          doc.addImage(info.dataUrl, info.isPng ? 'PNG' : 'JPEG', margin, y, w, h);
+          y += h + 10;
+        } catch (err) { /* skip image that fails to load */ }
+      }
+      if ((entry.videos || []).length) {
+        ensureSpace(14);
+        doc.setTextColor(140, 140, 140);
+        doc.text('[Video — dostupné jen v appce, do PDF se nedá vložit]', margin, y);
+        doc.setTextColor(0, 0, 0);
+        y += 16;
+      }
+      ensureSpace(10);
+      y += 8;
+    }
+  }
+
+  const fname = `udrzba-${filenameBase.replace(/[^a-z0-9á-žÁ-Ž_\- ]/gi, '').trim().replace(/\s+/g, '-')}.pdf`;
+  doc.save(fname);
+}
+
+async function runExportPdf() {
+  const checked = Array.from(document.querySelectorAll('.export-check:checked')).map(el => el.value);
+  const progressEl = document.getElementById('exportProgress');
+  if (!checked.length) {
+    if (progressEl) progressEl.textContent = 'Vyber aspoň jednu položku.';
+    return;
+  }
+  if (progressEl) progressEl.textContent = 'Připravuji PDF…';
+
+  try {
+    const cat = state.categories.find(c => c.id === state.categoryId);
+    const items = state.itemsByCat[state.categoryId] || [];
+    const allEntries = state.entriesByCat[state.categoryId] || [];
+
+    const sections = checked.map(key => {
+      const groupName = key === 'unassigned' ? 'Nezařazené' : (items.find(it => it.id === key) || {}).name || '';
+      const groupEntries = key === 'unassigned'
+        ? allEntries.filter(e => !e.itemId)
+        : allEntries.filter(e => e.itemId === key);
+      return { heading: groupName, level: 2, entries: groupEntries };
+    });
+
+    await buildAndSavePdf(sections, `${cat ? cat.name : ''} — Údržba strojů`, cat ? cat.name : 'export', progressEl);
+    document.querySelectorAll('.modal-overlay').forEach(el => el.remove());
+  } catch (err) {
+    if (progressEl) progressEl.textContent = 'Export se nepovedl — zkontroluj internet (knihovna pro PDF se stahuje z webu) a zkus to znovu.';
+  }
+}
+
 // ===================== VOICE RECORDING + OFFLINE TRANSCRIPTION =====================
 // Records audio with MediaRecorder, then transcribes it fully offline in the browser
 // using a Whisper model (via transformers.js). The model itself (tens of MB) is
@@ -1346,7 +1595,9 @@ Object.assign(window, {
   toggleBulkMode, toggleBulkSelect, moveBulkSelected, mergeBulkSelected,
   openColorPicker, applyCategoryColor, applyCategoryTextColor, resetCategoryColor,
   openItemColorPicker, applyItemColor, applyItemTextColor, resetItemColor,
-  openVoiceRecorder, voiceStartRecording, voiceStopRecording, voiceReset, voiceTranscribe
+  openVoiceRecorder, voiceStartRecording, voiceStopRecording, voiceReset, voiceTranscribe,
+  openExportPicker, exportSelectAll, runExportPdf,
+  openHomeExportPicker, exportSelectAllHome, runHomeExportPdf
 });
 
 // ===================== INIT =====================
