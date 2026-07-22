@@ -1,6 +1,6 @@
 // ===================== DB LAYER =====================
 const DB_NAME = 'udrzba-db';
-const DB_VERSION = 2;
+const DB_VERSION = 3;
 let db;
 
 function openDB() {
@@ -19,6 +19,9 @@ function openDB() {
       if (!_db.objectStoreNames.contains('items')) {
         const s = _db.createObjectStore('items', { keyPath: 'id' });
         s.createIndex('categoryId', 'categoryId');
+      }
+      if (!_db.objectStoreNames.contains('halls')) {
+        _db.createObjectStore('halls', { keyPath: 'id' });
       }
       if (!_db.objectStoreNames.contains('media')) {
         _db.createObjectStore('media', { keyPath: 'id' });
@@ -136,6 +139,22 @@ async function seedIfEmpty() {
   await idbPut('meta', { key: 'seedVersion', value: SEED_VERSION });
 }
 
+// Creates the two default halls once, so the app starts organized. If the user
+// later deletes both halls on purpose, this won't recreate them (checked via a
+// separate meta flag, not just "halls store is empty").
+async function ensureDefaultHalls() {
+  const flag = await idbGet('meta', 'defaultHallsCreated');
+  if (flag && flag.value) return;
+  const existing = await idbGetAll('halls');
+  if (existing.length === 0) {
+    await idbPutMany('halls', [
+      { id: 'hall_stara', name: 'Stará Hala', order: 0 },
+      { id: 'hall_nova', name: 'Nová Hala', order: 1 }
+    ]);
+  }
+  await idbPut('meta', { key: 'defaultHallsCreated', value: true });
+}
+
 // ===================== UTIL =====================
 function normalizeCz(str) {
   return (str || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().trim();
@@ -180,6 +199,8 @@ let state = {
   allEntries: [],
   items: [],
   itemsByCat: {},
+  halls: [],
+  categoriesByHall: {},
   expandedItems: new Set(['unassigned']),
   bulkMode: false,
   bulkGroupKey: null,
@@ -194,9 +215,12 @@ async function loadAll() {
   const entries = await idbGetAll('entries');
   const items = await idbGetAll('items');
   items.sort((a, b) => (a.order || 0) - (b.order || 0));
+  const halls = await idbGetAll('halls');
+  halls.sort((a, b) => (a.order || 0) - (b.order || 0));
   state.categories = cats;
   state.allEntries = entries;
   state.items = items;
+  state.halls = halls;
   const byCat = {};
   entries.forEach(e => {
     byCat[e.categoryId] = byCat[e.categoryId] || [];
@@ -211,6 +235,14 @@ async function loadAll() {
     itemsByCat[it.categoryId].push(it);
   });
   state.itemsByCat = itemsByCat;
+
+  const categoriesByHall = {};
+  cats.forEach(c => {
+    const key = c.hallId || 'unassigned';
+    categoriesByHall[key] = categoriesByHall[key] || [];
+    categoriesByHall[key].push(c);
+  });
+  state.categoriesByHall = categoriesByHall;
 }
 
 function catName(id) {
@@ -236,12 +268,15 @@ function renderHome() {
       </div>
     `;
   } else {
+    const unassignedCats = state.categoriesByHall['unassigned'] || [];
     body = `
-      <div class="section-label">Stroje (${state.categories.length}) <span class="hint-inline">— přetažením za ⠿ změníš pořadí</span></div>
-      <div class="cat-grid" id="catGrid">
-        ${state.categories.map(renderCatCard).join('')}
+      <div class="section-label">Stroje (${state.categories.length}) <span class="hint-inline">— přetažením za ⠿ změníš pořadí i halu</span></div>
+      <div class="hall-section-list">
+        ${state.halls.map(renderHallSection).join('')}
+        ${unassignedCats.length ? renderHallSection(null, unassignedCats) : ''}
       </div>
-      <button class="fab-secondary" onclick="openNewCategory()">+ Přidat stroj / kategorii</button>
+      <button class="fab-secondary" onclick="openNewHall()">+ Přidat halu</button>
+      <button class="fab-secondary" onclick="openNewCategory(null)">+ Přidat stroj / kategorii</button>
     `;
   }
 
@@ -268,9 +303,39 @@ function renderHome() {
   });
 
   if (!searchResults) {
-    const grid = document.getElementById('catGrid');
-    if (grid) attachHomeDragReorder(grid);
+    document.querySelectorAll('.hall-cat-grid').forEach(grid => attachHomeDragReorder(grid));
+    const hallList = document.querySelector('.hall-section-list');
+    if (hallList) attachHallDragReorder(hallList);
   }
+}
+
+function renderHallSection(hall, unassignedCats) {
+  const isUnassigned = !hall;
+  const cats = isUnassigned ? unassignedCats : (state.categoriesByHall[hall.id] || []);
+  const styleParts = [];
+  if (hall && hall.color) styleParts.push(`background:${hall.color}`);
+  const headerStyle = styleParts.length ? ` style="${styleParts.join(';')}"` : '';
+  const nameStyle = (hall && hall.textColor) ? ` style="color:${hall.textColor}"` : '';
+  const hallKey = isUnassigned ? 'unassigned' : hall.id;
+
+  return `
+    <div class="hall-section ${isUnassigned ? 'unassigned-hall' : ''}">
+      <div class="hall-header"${headerStyle}>
+        <span class="hall-name"${nameStyle}>${escapeHtml(isUnassigned ? 'Bez haly' : hall.name)}</span>
+        <span class="item-count">${cats.length}</span>
+        ${isUnassigned ? '' : `
+          <button class="item-icon-btn" onclick="openHallColorPicker('${hall.id}')" title="Barva">🎨</button>
+          <button class="item-icon-btn" onclick="renameHall('${hall.id}')" title="Přejmenovat">✎</button>
+          <button class="item-icon-btn danger" onclick="deleteHall('${hall.id}')" title="Smazat halu">🗑</button>
+          <span class="item-drag-handle hall-drag-handle" data-id="${hall.id}">⠿</span>
+        `}
+      </div>
+      <div class="cat-grid hall-cat-grid" data-hall="${hallKey}">
+        ${cats.map(renderCatCard).join('')}
+      </div>
+      ${isUnassigned ? '' : `<button class="add-entry-in-item" onclick="openNewCategory('${hall.id}')">+ Přidat stroj do haly</button>`}
+    </div>
+  `;
 }
 
 function renderCatCard(c) {
@@ -344,16 +409,213 @@ function attachHomeDragReorder(gridEl) {
 }
 
 async function reorderCategories(dragId, targetId) {
-  const list = state.categories.slice();
-  const fromIdx = list.findIndex(c => c.id === dragId);
-  const toIdx = list.findIndex(c => c.id === targetId);
+  const dragCat = state.categories.find(c => c.id === dragId);
+  const targetCat = state.categories.find(c => c.id === targetId);
+  if (!dragCat || !targetCat) return;
+
+  const targetHallKey = targetCat.hallId || null;
+  dragCat.hallId = targetHallKey;
+
+  const siblings = state.categories.filter(c => (c.hallId || null) === targetHallKey && c.id !== dragId);
+  const targetIdx = siblings.findIndex(c => c.id === targetId);
+  siblings.splice(targetIdx, 0, dragCat);
+  siblings.forEach((c, i) => { c.order = i; });
+
+  await idbPutMany('categories', siblings);
+  await loadAll();
+  renderHome();
+}
+
+// Reordering the hall sections themselves (drag the ⠿ in a hall header).
+function attachHallDragReorder(listEl) {
+  listEl.querySelectorAll('.hall-drag-handle').forEach(handle => {
+    const section = handle.closest('.hall-section');
+    if (!section) return;
+    let startX = 0, startY = 0, dragging = false;
+
+    handle.addEventListener('pointerdown', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      startX = e.clientX; startY = e.clientY; dragging = true;
+      try { handle.setPointerCapture(e.pointerId); } catch (err) {}
+      section.classList.add('dragging');
+      if (navigator.vibrate) navigator.vibrate(12);
+    });
+
+    handle.addEventListener('pointermove', (e) => {
+      if (!dragging) return;
+      e.preventDefault();
+      const dy = e.clientY - startY;
+      section.style.transform = `translateY(${dy}px)`;
+    });
+
+    async function endDrag(e) {
+      if (!dragging) return;
+      dragging = false;
+      section.style.transform = '';
+      section.classList.remove('dragging');
+      section.style.pointerEvents = 'none';
+      const dropEl = document.elementFromPoint(e.clientX, e.clientY);
+      section.style.pointerEvents = '';
+      const dropSection = dropEl && dropEl.closest && dropEl.closest('.hall-section:not(.unassigned-hall)');
+      const dropHandle = dropSection && dropSection.querySelector('.hall-drag-handle');
+      if (dropHandle && dropHandle.dataset.id && dropHandle.dataset.id !== handle.dataset.id) {
+        await reorderHalls(handle.dataset.id, dropHandle.dataset.id);
+      }
+    }
+
+    handle.addEventListener('pointerup', endDrag);
+    handle.addEventListener('pointercancel', () => {
+      dragging = false;
+      section.style.transform = '';
+      section.classList.remove('dragging');
+    });
+  });
+}
+
+async function reorderHalls(dragId, targetId) {
+  const list = state.halls.slice();
+  const fromIdx = list.findIndex(h => h.id === dragId);
+  const toIdx = list.findIndex(h => h.id === targetId);
   if (fromIdx === -1 || toIdx === -1) return;
   const [moved] = list.splice(fromIdx, 1);
   list.splice(toIdx, 0, moved);
-  list.forEach((c, i) => { c.order = i; });
-  await idbPutMany('categories', list);
-  state.categories = list;
+  list.forEach((h, i) => { h.order = i; });
+  await idbPutMany('halls', list);
+  state.halls = list;
   renderHome();
+}
+
+// ===================== HALLS (Stará Hala / Nová Hala apod.) =====================
+async function openNewHall() {
+  const name = prompt('Název nové haly:');
+  if (!name || !name.trim()) return;
+  const id = uid();
+  const order = state.halls.length;
+  await idbPut('halls', { id, name: name.trim(), order });
+  await loadAll();
+  render();
+}
+
+async function renameHall(id) {
+  const hall = state.halls.find(h => h.id === id);
+  if (!hall) return;
+  const name = prompt('Nový název haly:', hall.name);
+  if (!name || !name.trim()) return;
+  hall.name = name.trim();
+  await idbPut('halls', hall);
+  await loadAll();
+  render();
+}
+
+async function deleteHall(id) {
+  const hall = state.halls.find(h => h.id === id);
+  if (!hall) return;
+  if (!confirm(`Smazat halu „${hall.name}“? Stroje v ní zůstanou zachované a přesunou se do „Bez haly“.`)) return;
+  const affected = state.categories.filter(c => c.hallId === id);
+  affected.forEach(c => { c.hallId = null; });
+  if (affected.length) await idbPutMany('categories', affected);
+  await idbDelete('halls', id);
+  await loadAll();
+  render();
+}
+
+function openHallColorPicker(hallId) {
+  const hall = state.halls.find(h => h.id === hallId);
+  if (!hall) return;
+  const div = document.createElement('div');
+  div.className = 'modal-overlay';
+  div.innerHTML = `
+    <div class="modal">
+      <div class="modal-title">Barva haly — ${escapeHtml(hall.name)}</div>
+      <p class="modal-text">Vyber barvu pozadí a barvu textu pro tuto halu.</p>
+
+      <div class="section-label">Barva pozadí</div>
+      <div class="swatch-grid">
+        ${TILE_PRESET_COLORS.map(hex => `<button class="swatch" style="background:${hex}" onclick="applyHallColor('${hallId}','${hex}')"></button>`).join('')}
+      </div>
+      <label class="custom-color-row">
+        Vlastní barva
+        <input type="color" value="${hall.color || '#171f29'}" onchange="applyHallColor('${hallId}', this.value)" />
+      </label>
+
+      <div class="section-label" style="margin-top:18px">Barva textu</div>
+      <div class="text-color-row">
+        <button class="modal-btn" onclick="applyHallTextColor('${hallId}','#e8edf2')">Světlý text</button>
+        <button class="modal-btn" onclick="applyHallTextColor('${hallId}','#12181f')">Tmavý text</button>
+      </div>
+      <label class="custom-color-row">
+        Vlastní barva textu
+        <input type="color" value="${hall.textColor || '#e8edf2'}" onchange="applyHallTextColor('${hallId}', this.value)" />
+      </label>
+
+      <button class="modal-btn" onclick="resetHallColor('${hallId}')" style="margin-top:16px">↺ Výchozí vzhled</button>
+      <button class="modal-btn primary" onclick="this.closest('.modal-overlay').remove()">Hotovo</button>
+    </div>
+  `;
+  document.body.appendChild(div);
+}
+
+async function applyHallColor(hallId, hex) {
+  const hall = state.halls.find(h => h.id === hallId);
+  if (!hall) return;
+  hall.color = hex;
+  await idbPut('halls', hall);
+  await loadAll();
+  render();
+}
+
+async function applyHallTextColor(hallId, hex) {
+  const hall = state.halls.find(h => h.id === hallId);
+  if (!hall) return;
+  hall.textColor = hex;
+  await idbPut('halls', hall);
+  await loadAll();
+  render();
+}
+
+async function resetHallColor(hallId) {
+  const hall = state.halls.find(h => h.id === hallId);
+  if (!hall) return;
+  hall.color = null;
+  hall.textColor = null;
+  await idbPut('halls', hall);
+  await loadAll();
+  document.querySelectorAll('.modal-overlay').forEach(el => el.remove());
+  render();
+}
+
+function openHallPicker(categoryId) {
+  const cat = state.categories.find(c => c.id === categoryId);
+  if (!cat) return;
+  const div = document.createElement('div');
+  div.className = 'modal-overlay';
+  div.innerHTML = `
+    <div class="modal">
+      <div class="modal-title">Přesunout „${escapeHtml(cat.name)}“ do haly</div>
+      <select id="hallPickerSelect" class="field-select">
+        <option value="" ${!cat.hallId ? 'selected' : ''}>Bez haly</option>
+        ${state.halls.map(h => `<option value="${h.id}" ${cat.hallId === h.id ? 'selected' : ''}>${escapeHtml(h.name)}</option>`).join('')}
+      </select>
+      <button class="modal-btn primary" style="margin-top:14px" onclick="applyHallPicker('${categoryId}')">Uložit</button>
+      <button class="modal-btn" onclick="this.closest('.modal-overlay').remove()">Zrušit</button>
+    </div>
+  `;
+  document.body.appendChild(div);
+}
+
+async function applyHallPicker(categoryId) {
+  const select = document.getElementById('hallPickerSelect');
+  const cat = state.categories.find(c => c.id === categoryId);
+  if (!cat || !select) return;
+  const newHallId = select.value || null;
+  const siblingCount = (state.categoriesByHall[newHallId || 'unassigned'] || []).length;
+  cat.hallId = newHallId;
+  cat.order = siblingCount;
+  await idbPut('categories', cat);
+  await loadAll();
+  document.querySelectorAll('.modal-overlay').forEach(el => el.remove());
+  render();
 }
 
 // Same handle-based drag approach as the home screen, applied to the item-group
@@ -439,6 +701,7 @@ function renderCategory() {
       <button class="icon-btn" onclick="goHome()">←</button>
       <div class="topbar-title">${escapeHtml(cat ? cat.name : '')}</div>
       <button class="icon-btn" onclick="openColorPicker('${state.categoryId}')" title="Barva dlaždice">🎨</button>
+      <button class="icon-btn" onclick="openHallPicker('${state.categoryId}')" title="Přesunout do haly">🏢</button>
       <button class="icon-btn" onclick="renameCategory('${state.categoryId}')" title="Přejmenovat">✎</button>
     </header>
     <main class="content">
@@ -791,11 +1054,12 @@ function openCategory(id) {
   render();
 }
 
-async function openNewCategory() {
+async function openNewCategory(hallId) {
   const name = prompt('Název nového stroje / kategorie:');
   if (!name || !name.trim()) return;
   const id = uid();
-  const cat = { id, name: name.trim(), order: state.categories.length };
+  const siblingCount = hallId ? (state.categoriesByHall[hallId] || []).length : (state.categoriesByHall['unassigned'] || []).length;
+  const cat = { id, name: name.trim(), order: siblingCount, hallId: hallId || null };
   await idbPut('categories', cat);
   await loadAll();
   render();
@@ -1597,13 +1861,17 @@ Object.assign(window, {
   openItemColorPicker, applyItemColor, applyItemTextColor, resetItemColor,
   openVoiceRecorder, voiceStartRecording, voiceStopRecording, voiceReset, voiceTranscribe,
   openExportPicker, exportSelectAll, runExportPdf,
-  openHomeExportPicker, exportSelectAllHome, runHomeExportPdf
+  openHomeExportPicker, exportSelectAllHome, runHomeExportPdf,
+  openNewHall, renameHall, deleteHall, reorderHalls,
+  openHallColorPicker, applyHallColor, applyHallTextColor, resetHallColor,
+  openHallPicker, applyHallPicker
 });
 
 // ===================== INIT =====================
 async function init() {
   await openDB();
   await seedIfEmpty();
+  await ensureDefaultHalls();
   await loadAll();
   render();
 
