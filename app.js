@@ -190,8 +190,9 @@ async function resolveMediaUrl(item) {
 
 // ===================== STATE =====================
 let state = {
-  view: 'home', // home | category | entry-form | search
+  view: 'home', // home | hall | category | entry-form
   categoryId: null,
+  currentHallId: null,
   editingEntryId: null,
   searchTerm: '',
   categories: [],
@@ -268,15 +269,14 @@ function renderHome() {
       </div>
     `;
   } else {
-    const unassignedCats = state.categoriesByHall['unassigned'] || [];
+    const unassignedCount = (state.categoriesByHall['unassigned'] || []).length;
     body = `
-      <div class="section-label">Stroje (${state.categories.length}) <span class="hint-inline">— přetažením za ⠿ změníš pořadí i halu</span></div>
-      <div class="hall-section-list">
-        ${state.halls.map(renderHallSection).join('')}
-        ${unassignedCats.length ? renderHallSection(null, unassignedCats) : ''}
+      <div class="section-label">Haly (${state.halls.length}) <span class="hint-inline">— přetažením za ⠿ změníš pořadí</span></div>
+      <div class="cat-grid" id="hallGrid">
+        ${state.halls.map(renderHallTile).join('')}
+        ${unassignedCount ? renderUnassignedHallTile() : ''}
       </div>
       <button class="fab-secondary" onclick="openNewHall()">+ Přidat halu</button>
-      <button class="fab-secondary" onclick="openNewCategory(null)">+ Přidat stroj / kategorii</button>
     `;
   }
 
@@ -303,39 +303,121 @@ function renderHome() {
   });
 
   if (!searchResults) {
-    document.querySelectorAll('.hall-cat-grid').forEach(grid => attachHomeDragReorder(grid));
-    const hallList = document.querySelector('.hall-section-list');
-    if (hallList) attachHallDragReorder(hallList);
+    const hallGrid = document.getElementById('hallGrid');
+    if (hallGrid) attachHallTileDragReorder(hallGrid);
   }
 }
 
-function renderHallSection(hall, unassignedCats) {
-  const isUnassigned = !hall;
-  const cats = isUnassigned ? unassignedCats : (state.categoriesByHall[hall.id] || []);
+function renderHallTile(hall) {
+  const count = (state.categoriesByHall[hall.id] || []).length;
   const styleParts = [];
-  if (hall && hall.color) styleParts.push(`background:${hall.color}`);
-  const headerStyle = styleParts.length ? ` style="${styleParts.join(';')}"` : '';
-  const nameStyle = (hall && hall.textColor) ? ` style="color:${hall.textColor}"` : '';
-  const hallKey = isUnassigned ? 'unassigned' : hall.id;
-
+  if (hall.color) { styleParts.push(`background:${hall.color}`); styleParts.push(`border-left-color:${hall.color}`); }
+  if (hall.textColor) styleParts.push(`color:${hall.textColor}`);
+  const styleAttr = styleParts.length ? ` style="${styleParts.join(';')}"` : '';
   return `
-    <div class="hall-section ${isUnassigned ? 'unassigned-hall' : ''}">
-      <div class="hall-header"${headerStyle}>
-        <span class="hall-name"${nameStyle}>${escapeHtml(isUnassigned ? 'Bez haly' : hall.name)}</span>
-        <span class="item-count">${cats.length}</span>
-        ${isUnassigned ? '' : `
-          <button class="item-icon-btn" onclick="openHallColorPicker('${hall.id}')" title="Barva">🎨</button>
-          <button class="item-icon-btn" onclick="renameHall('${hall.id}')" title="Přejmenovat">✎</button>
-          <button class="item-icon-btn danger" onclick="deleteHall('${hall.id}')" title="Smazat halu">🗑</button>
-          <span class="item-drag-handle hall-drag-handle" data-id="${hall.id}">⠿</span>
-        `}
-      </div>
-      <div class="cat-grid hall-cat-grid" data-hall="${hallKey}">
-        ${cats.map(renderCatCard).join('')}
-      </div>
-      ${isUnassigned ? '' : `<button class="add-entry-in-item" onclick="openNewCategory('${hall.id}')">+ Přidat stroj do haly</button>`}
+    <div class="cat-card" data-id="${hall.id}" onclick="openHallDetail('${hall.id}')"${styleAttr}>
+      <div class="cat-card-name">${escapeHtml(hall.name)}</div>
+      <div class="cat-card-count">${count} ${count === 1 ? 'stroj' : (count >= 2 && count <= 4 ? 'stroje' : 'strojů')}</div>
+      <div class="drag-handle" data-id="${hall.id}" onclick="event.stopPropagation()">⠿</div>
     </div>
   `;
+}
+
+function renderUnassignedHallTile() {
+  const count = (state.categoriesByHall['unassigned'] || []).length;
+  return `
+    <div class="cat-card unassigned-hall-tile" data-id="unassigned" onclick="openHallDetail('unassigned')">
+      <div class="cat-card-name">Bez haly</div>
+      <div class="cat-card-count">${count} ${count === 1 ? 'stroj' : (count >= 2 && count <= 4 ? 'stroje' : 'strojů')}</div>
+    </div>
+  `;
+}
+
+// Drag reorder for hall tiles on the home screen — same handle-based pattern as
+// machine tiles, just calling reorderHalls instead. The virtual "Bez haly" tile
+// has no handle so it's never a drag source; dropping onto it is a harmless no-op.
+function attachHallTileDragReorder(gridEl) {
+  gridEl.querySelectorAll('.drag-handle').forEach(handle => {
+    const card = handle.closest('.cat-card');
+    if (!card) return;
+    let startX = 0, startY = 0, dragging = false;
+
+    handle.addEventListener('pointerdown', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      startX = e.clientX; startY = e.clientY; dragging = true;
+      try { handle.setPointerCapture(e.pointerId); } catch (err) {}
+      card.classList.add('dragging');
+      if (navigator.vibrate) navigator.vibrate(12);
+    });
+
+    handle.addEventListener('pointermove', (e) => {
+      if (!dragging) return;
+      e.preventDefault();
+      const dx = e.clientX - startX;
+      const dy = e.clientY - startY;
+      card.style.transform = `translate(${dx}px, ${dy}px) scale(1.04)`;
+    });
+
+    async function endDrag(e) {
+      if (!dragging) return;
+      dragging = false;
+      card.style.transform = '';
+      card.classList.remove('dragging');
+      card.style.pointerEvents = 'none';
+      const dropEl = document.elementFromPoint(e.clientX, e.clientY);
+      card.style.pointerEvents = '';
+      const dropCard = dropEl && dropEl.closest && dropEl.closest('.cat-card');
+      if (dropCard && dropCard !== card) {
+        await reorderHalls(card.dataset.id, dropCard.dataset.id);
+      }
+    }
+
+    handle.addEventListener('pointerup', endDrag);
+    handle.addEventListener('pointercancel', () => {
+      dragging = false;
+      card.style.transform = '';
+      card.classList.remove('dragging');
+    });
+  });
+}
+
+// ===================== RENDER: HALL DETAIL (machines inside one hall) =====================
+function renderHallDetail() {
+  const hallId = state.currentHallId;
+  const isUnassigned = hallId === 'unassigned';
+  const hall = isUnassigned ? null : state.halls.find(h => h.id === hallId);
+  const cats = state.categoriesByHall[hallId] || [];
+  const name = isUnassigned ? 'Bez haly' : (hall ? hall.name : '');
+
+  app.innerHTML = `
+    <header class="topbar">
+      <button class="icon-btn" onclick="goHome()">←</button>
+      <div class="topbar-title">${escapeHtml(name)}</div>
+      ${isUnassigned ? '' : `
+        <button class="icon-btn" onclick="openHallColorPicker('${hallId}')" title="Barva">🎨</button>
+        <button class="icon-btn" onclick="renameHall('${hallId}')" title="Přejmenovat">✎</button>
+        <button class="icon-btn" onclick="deleteHall('${hallId}')" title="Smazat halu">🗑</button>
+      `}
+    </header>
+    <main class="content">
+      <div class="cat-toolbar">
+        <button class="toolbar-btn" onclick="openNewCategory(${isUnassigned ? 'null' : `'${hallId}'`})">+ Přidat stroj</button>
+      </div>
+      <div class="cat-grid" id="hallCatGrid">
+        ${cats.length === 0 ? `<div class="empty-state">Zatím tu nejsou žádné stroje.</div>` : cats.map(renderCatCard).join('')}
+      </div>
+    </main>
+  `;
+
+  const grid = document.getElementById('hallCatGrid');
+  if (grid) attachHomeDragReorder(grid);
+}
+
+function openHallDetail(hallId) {
+  state.view = 'hall';
+  state.currentHallId = hallId;
+  render();
 }
 
 function renderCatCard(c) {
@@ -426,53 +508,6 @@ async function reorderCategories(dragId, targetId) {
   renderHome();
 }
 
-// Reordering the hall sections themselves (drag the ⠿ in a hall header).
-function attachHallDragReorder(listEl) {
-  listEl.querySelectorAll('.hall-drag-handle').forEach(handle => {
-    const section = handle.closest('.hall-section');
-    if (!section) return;
-    let startX = 0, startY = 0, dragging = false;
-
-    handle.addEventListener('pointerdown', (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-      startX = e.clientX; startY = e.clientY; dragging = true;
-      try { handle.setPointerCapture(e.pointerId); } catch (err) {}
-      section.classList.add('dragging');
-      if (navigator.vibrate) navigator.vibrate(12);
-    });
-
-    handle.addEventListener('pointermove', (e) => {
-      if (!dragging) return;
-      e.preventDefault();
-      const dy = e.clientY - startY;
-      section.style.transform = `translateY(${dy}px)`;
-    });
-
-    async function endDrag(e) {
-      if (!dragging) return;
-      dragging = false;
-      section.style.transform = '';
-      section.classList.remove('dragging');
-      section.style.pointerEvents = 'none';
-      const dropEl = document.elementFromPoint(e.clientX, e.clientY);
-      section.style.pointerEvents = '';
-      const dropSection = dropEl && dropEl.closest && dropEl.closest('.hall-section:not(.unassigned-hall)');
-      const dropHandle = dropSection && dropSection.querySelector('.hall-drag-handle');
-      if (dropHandle && dropHandle.dataset.id && dropHandle.dataset.id !== handle.dataset.id) {
-        await reorderHalls(handle.dataset.id, dropHandle.dataset.id);
-      }
-    }
-
-    handle.addEventListener('pointerup', endDrag);
-    handle.addEventListener('pointercancel', () => {
-      dragging = false;
-      section.style.transform = '';
-      section.classList.remove('dragging');
-    });
-  });
-}
-
 async function reorderHalls(dragId, targetId) {
   const list = state.halls.slice();
   const fromIdx = list.findIndex(h => h.id === dragId);
@@ -517,7 +552,11 @@ async function deleteHall(id) {
   if (affected.length) await idbPutMany('categories', affected);
   await idbDelete('halls', id);
   await loadAll();
-  render();
+  if (state.view === 'hall' && state.currentHallId === id) {
+    goHome();
+  } else {
+    render();
+  }
 }
 
 function openHallColorPicker(hallId) {
@@ -698,7 +737,7 @@ function renderCategory() {
 
   app.innerHTML = `
     <header class="topbar">
-      <button class="icon-btn" onclick="goHome()">←</button>
+      <button class="icon-btn" onclick="categoryBack()">←</button>
       <div class="topbar-title">${escapeHtml(cat ? cat.name : '')}</div>
       <button class="icon-btn" onclick="openColorPicker('${state.categoryId}')" title="Barva dlaždice">🎨</button>
       <button class="icon-btn" onclick="openHallPicker('${state.categoryId}')" title="Přesunout do haly">🏢</button>
@@ -1172,7 +1211,19 @@ async function mergeBulkSelected() {
 function goHome() {
   state.view = 'home';
   state.categoryId = null;
+  state.currentHallId = null;
   render();
+}
+
+function categoryBack() {
+  const cat = state.categories.find(c => c.id === state.categoryId);
+  if (cat && cat.hallId) {
+    openHallDetail(cat.hallId);
+  } else if (cat) {
+    openHallDetail('unassigned');
+  } else {
+    goHome();
+  }
 }
 
 function openCategory(id) {
@@ -1359,6 +1410,7 @@ function openEditEntry(entryId) {
   if (!e) return;
   formDraft = JSON.parse(JSON.stringify(e));
   formDraft.isNew = false;
+  state.categoryId = e.categoryId;
   state.view = 'entry-form';
   render();
 }
@@ -1973,16 +2025,17 @@ async function importBackup(event) {
 // ===================== MAIN RENDER =====================
 function render() {
   if (state.view === 'home') renderHome();
+  else if (state.view === 'hall') renderHallDetail();
   else if (state.view === 'category') renderCategory();
   else if (state.view === 'entry-form') renderEntryForm();
-  if (state.view === 'home' || state.view === 'category') {
+  if (state.view === 'home' || state.view === 'hall' || state.view === 'category') {
     setTimeout(hydrateMediaRows, 0);
   }
 }
 
 // expose functions used inline in HTML
 Object.assign(window, {
-  openCategory, goHome, openNewCategory, renameCategory,
+  openCategory, goHome, categoryBack, openHallDetail, openNewCategory, renameCategory,
   openNewEntry, openEditEntry, cancelForm, saveForm,
   addImages, addVideos, removeImage, removeVideo,
   confirmDeleteEntry, clearSearch, openLightbox, openLightboxForEntry,

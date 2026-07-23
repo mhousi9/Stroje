@@ -881,3 +881,9 @@ textarea:focus { outline: 2px solid var(--accent); }
   border-style: dashed;
   background: transparent;
 }
+
+.unassigned-hall-tile {
+  border-style: dashed;
+  border-left-style: solid;
+  border-left-color: var(--text-dim);
+}
