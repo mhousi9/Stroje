@@ -742,6 +742,7 @@ function renderItemGroup(itemOrNull, entries) {
         ${itemOrNull ? `
           <button class="item-icon-btn" onclick="event.stopPropagation(); openItemColorPicker('${itemOrNull.id}')" title="Barva">🎨</button>
           <button class="item-icon-btn" onclick="event.stopPropagation(); renameItem('${itemOrNull.id}')" title="Přejmenovat">✎</button>
+          <button class="item-icon-btn" onclick="event.stopPropagation(); openMoveItemPicker('${itemOrNull.id}')" title="Přesunout do jiného stroje">🔀</button>
           <button class="item-icon-btn danger" onclick="event.stopPropagation(); deleteItemGroup('${itemOrNull.id}')" title="Smazat položku">🗑</button>
           <span class="item-drag-handle" data-id="${itemOrNull.id}" onclick="event.stopPropagation()">⠿</span>
         ` : `
@@ -810,47 +811,123 @@ async function hydrateMediaRows() {
     const id = row.id.replace('media-', '');
     const entry = state.allEntries.find(x => x.id === id);
     if (!entry) continue;
-    let html = '';
+    const media = [];
     for (const img of (entry.images || [])) {
       const url = await resolveMediaUrl(img);
-      if (url) html += `<img class="thumb" src="${url}" onclick="openLightbox('${url}','image')" />`;
+      if (url) media.push({ type: 'image', url });
     }
     for (const vid of (entry.videos || [])) {
       const url = await resolveMediaUrl(vid);
-      if (url) html += `<div class="thumb thumb-video" onclick="openLightbox('${url}','video')"><video src="${url}" muted playsinline preload="metadata"></video><span class="thumb-play">▶</span></div>`;
+      if (url) media.push({ type: 'video', url });
     }
-    row.innerHTML = html;
+
+    if (media.length === 0) { row.innerHTML = ''; continue; }
+
+    if (media.length === 1) {
+      const m = media[0];
+      row.innerHTML = m.type === 'video'
+        ? `<div class="thumb thumb-video" onclick="openLightboxForEntry('${id}',0)"><video src="${m.url}" muted playsinline preload="metadata"></video><span class="thumb-play">▶</span></div>`
+        : `<img class="thumb" src="${m.url}" onclick="openLightboxForEntry('${id}',0)" />`;
+      continue;
+    }
+
+    const slides = media.map((m, i) => m.type === 'video'
+      ? `<div class="media-slide thumb-video" onclick="openLightboxForEntry('${id}',${i})"><video src="${m.url}" muted playsinline preload="metadata"></video><span class="thumb-play">▶</span></div>`
+      : `<div class="media-slide" onclick="openLightboxForEntry('${id}',${i})"><img src="${m.url}" /></div>`
+    ).join('');
+    const dots = media.map((_, i) => `<span class="media-dot${i === 0 ? ' active' : ''}"></span>`).join('');
+
+    row.innerHTML = `
+      <div class="media-carousel">
+        <div class="media-carousel-track">${slides}</div>
+        <div class="media-dots">${dots}</div>
+      </div>
+    `;
+
+    const track = row.querySelector('.media-carousel-track');
+    const dotEls = row.querySelectorAll('.media-dot');
+    let scrollTimer = null;
+    track.addEventListener('scroll', () => {
+      clearTimeout(scrollTimer);
+      scrollTimer = setTimeout(() => {
+        const idx = Math.round(track.scrollLeft / track.clientWidth);
+        dotEls.forEach((d, i) => d.classList.toggle('active', i === idx));
+      }, 60);
+    });
   }
 }
 
-// ===================== LIGHTBOX (zoomable image / video viewer) =====================
-function openLightbox(url, kind) {
+async function openLightboxForEntry(entryId, startIndex) {
+  const entry = state.allEntries.find(x => x.id === entryId);
+  if (!entry) return;
+  const media = [];
+  for (const img of (entry.images || [])) {
+    const url = await resolveMediaUrl(img);
+    if (url) media.push({ type: 'image', url });
+  }
+  for (const vid of (entry.videos || [])) {
+    const url = await resolveMediaUrl(vid);
+    if (url) media.push({ type: 'video', url });
+  }
+  openLightbox(media, startIndex || 0);
+}
+
+// ===================== LIGHTBOX (zoomable image / video viewer, swipeable when multiple) =====================
+function openLightbox(media, startIndex) {
+  let idx = startIndex || 0;
   const overlay = document.createElement('div');
   overlay.className = 'lightbox';
   overlay.innerHTML = `
     <button class="lightbox-close" onclick="this.closest('.lightbox').remove()">✕</button>
-    <div class="lightbox-hint">Přiblížíš sevřením prstů, posun přetažením, zavřeš ✕</div>
+    ${media.length > 1 ? `<div class="lightbox-counter" id="lbCounter"></div>` : ''}
+    ${media.length > 1 ? `
+      <button class="lightbox-nav lightbox-prev" onclick="event.stopPropagation(); window.__lbNav(-1)">‹</button>
+      <button class="lightbox-nav lightbox-next" onclick="event.stopPropagation(); window.__lbNav(1)">›</button>
+    ` : ''}
+    <div class="lightbox-hint">Přiblížíš sevřením prstů${media.length > 1 ? ', přepneš přejetím prstem do strany' : ''}, zavřeš ✕</div>
     <div class="lightbox-viewport" id="lbViewport">
-      <div class="lightbox-content" id="lbContent">
-        ${kind === 'video'
-          ? `<video src="${url}" controls playsinline autoplay></video>`
-          : `<img src="${url}" draggable="false" />`}
-      </div>
+      <div class="lightbox-content" id="lbContent"></div>
     </div>
   `;
   document.body.appendChild(overlay);
-  setupLightboxZoom(document.getElementById('lbViewport'), document.getElementById('lbContent'));
+
+  const viewport = document.getElementById('lbViewport');
+  const content = document.getElementById('lbContent');
+  const counterEl = document.getElementById('lbCounter');
+
+  function navigate(dir) {
+    idx = (idx + dir + media.length) % media.length;
+    renderSlide();
+  }
+  window.__lbNav = navigate;
+
+  const nav = setupLightboxNav(viewport, content, media.length, navigate);
+
+  function renderSlide() {
+    const item = media[idx];
+    content.innerHTML = item.type === 'video'
+      ? `<video src="${item.url}" controls playsinline autoplay></video>`
+      : `<img src="${item.url}" draggable="false" />`;
+    if (counterEl) counterEl.textContent = `${idx + 1} / ${media.length}`;
+    nav.resetZoom();
+  }
+  renderSlide();
 }
 
-function setupLightboxZoom(viewport, content) {
+function setupLightboxNav(viewport, content, mediaLength, onNavigate) {
   let scale = 1, panX = 0, panY = 0;
   const pointers = new Map();
   let startDist = 0, startScale = 1;
   let startPanX = 0, startPanY = 0, startMidX = 0, startMidY = 0;
   let lastTapTime = 0;
+  let swipeStartX = 0, swipeDX = 0, singlePointerId = null;
 
   function apply() {
     content.style.transform = `translate(${panX}px, ${panY}px) scale(${scale})`;
+  }
+  function resetZoom() {
+    scale = 1; panX = 0; panY = 0;
+    apply();
   }
 
   function dist(pts) {
@@ -866,14 +943,10 @@ function setupLightboxZoom(viewport, content) {
     try { viewport.setPointerCapture(e.pointerId); } catch (err) {}
     pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
 
-    if (pointers.size === 2) {
-      const pts = Array.from(pointers.values());
-      startDist = dist(pts);
-      startScale = scale;
-      const m = mid(pts);
-      startMidX = m.x; startMidY = m.y;
-      startPanX = panX; startPanY = panY;
-    } else if (pointers.size === 1) {
+    if (pointers.size === 1) {
+      singlePointerId = e.pointerId;
+      swipeStartX = e.clientX;
+      swipeDX = 0;
       startPanX = panX - e.clientX;
       startPanY = panY - e.clientY;
       const now = Date.now();
@@ -885,6 +958,13 @@ function setupLightboxZoom(viewport, content) {
       } else {
         lastTapTime = now;
       }
+    } else if (pointers.size === 2) {
+      const pts = Array.from(pointers.values());
+      startDist = dist(pts);
+      startScale = scale;
+      const m = mid(pts);
+      startMidX = m.x; startMidY = m.y;
+      startPanX = panX; startPanY = panY;
     }
   });
 
@@ -901,20 +981,31 @@ function setupLightboxZoom(viewport, content) {
       panX = startPanX + (m.x - startMidX);
       panY = startPanY + (m.y - startMidY);
       apply();
-    } else if (pointers.size === 1 && scale > 1) {
-      e.preventDefault();
-      panX = e.clientX + startPanX;
-      panY = e.clientY + startPanY;
-      apply();
+    } else if (pointers.size === 1) {
+      if (scale > 1) {
+        e.preventDefault();
+        panX = e.clientX + startPanX;
+        panY = e.clientY + startPanY;
+        apply();
+      } else if (e.pointerId === singlePointerId) {
+        swipeDX = e.clientX - swipeStartX;
+      }
     }
   });
 
   function release(e) {
+    if (pointers.size === 1 && scale <= 1 && mediaLength > 1 && e.pointerId === singlePointerId) {
+      if (swipeDX > 60) onNavigate(-1);
+      else if (swipeDX < -60) onNavigate(1);
+    }
     pointers.delete(e.pointerId);
+    swipeDX = 0;
     if (scale <= 1) { scale = 1; panX = 0; panY = 0; apply(); }
   }
   viewport.addEventListener('pointerup', release);
   viewport.addEventListener('pointercancel', release);
+
+  return { resetZoom };
 }
 
 // ===================== ITEMS (položky) =====================
@@ -958,6 +1049,47 @@ async function deleteItemGroup(id) {
   state.expandedItems.delete(id);
   await loadAll();
   render();
+}
+
+function openMoveItemPicker(itemId) {
+  const item = state.items.find(x => x.id === itemId);
+  if (!item) return;
+  const otherCats = state.categories.filter(c => c.id !== state.categoryId);
+  const div = document.createElement('div');
+  div.className = 'modal-overlay';
+  div.innerHTML = `
+    <div class="modal">
+      <div class="modal-title">Přesunout „${escapeHtml(item.name)}“ do jiného stroje</div>
+      <p class="modal-text">Položka i všechny její záznamy (texty, fotky, videa) se přesunou do vybraného stroje.</p>
+      <select id="moveItemSelect" class="field-select">
+        ${otherCats.length === 0 ? `<option value="">Žádný jiný stroj neexistuje</option>` :
+          otherCats.map(c => `<option value="${c.id}">${escapeHtml(c.name)}</option>`).join('')}
+      </select>
+      <button class="modal-btn primary" style="margin-top:14px" ${otherCats.length === 0 ? 'disabled' : ''} onclick="applyMoveItem('${itemId}')">Přesunout</button>
+      <button class="modal-btn" onclick="this.closest('.modal-overlay').remove()">Zrušit</button>
+    </div>
+  `;
+  document.body.appendChild(div);
+}
+
+async function applyMoveItem(itemId) {
+  const select = document.getElementById('moveItemSelect');
+  const item = state.items.find(x => x.id === itemId);
+  if (!item || !select || !select.value) return;
+  const targetCategoryId = select.value;
+
+  const order = (state.itemsByCat[targetCategoryId] || []).length;
+  item.categoryId = targetCategoryId;
+  item.order = order;
+  await idbPut('items', item);
+
+  const affected = state.allEntries.filter(e => e.itemId === itemId);
+  affected.forEach(e => { e.categoryId = targetCategoryId; });
+  if (affected.length) await idbPutMany('entries', affected);
+
+  await loadAll();
+  document.querySelectorAll('.modal-overlay').forEach(el => el.remove());
+  openCategory(targetCategoryId);
 }
 
 async function deleteUnassigned() {
@@ -1853,9 +1985,10 @@ Object.assign(window, {
   openCategory, goHome, openNewCategory, renameCategory,
   openNewEntry, openEditEntry, cancelForm, saveForm,
   addImages, addVideos, removeImage, removeVideo,
-  confirmDeleteEntry, clearSearch, openLightbox,
+  confirmDeleteEntry, clearSearch, openLightbox, openLightboxForEntry,
   openBackup, exportBackup, importBackup,
   toggleItem, openNewItem, renameItem, deleteItemGroup, deleteUnassigned,
+  openMoveItemPicker, applyMoveItem,
   toggleBulkMode, toggleBulkSelect, moveBulkSelected, mergeBulkSelected,
   openColorPicker, applyCategoryColor, applyCategoryTextColor, resetCategoryColor,
   openItemColorPicker, applyItemColor, applyItemTextColor, resetItemColor,
