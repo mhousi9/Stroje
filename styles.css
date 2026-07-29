@@ -627,6 +627,49 @@ textarea:focus { outline: 2px solid var(--accent); }
   gap: 10px;
 }
 .entry-card-main { flex: 1; min-width: 0; }
+.entry-drag-handle {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  color: var(--text-dim);
+  font-size: 1.05rem;
+  touch-action: none;
+  cursor: grab;
+  border-radius: 6px;
+  flex-shrink: 0;
+}
+.entry-drag-handle:active { background: rgba(240, 168, 60, 0.15); color: var(--accent); }
+.entry-card.dragging {
+  z-index: 50;
+  box-shadow: 0 8px 24px rgba(0,0,0,0.55);
+  border-radius: var(--radius);
+}
+
+.entry-color-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+.entry-color-row input[type="color"] {
+  width: 44px;
+  height: 40px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: transparent;
+  padding: 2px;
+  flex-shrink: 0;
+}
+.entry-color-preview {
+  margin-top: 8px;
+  padding: 10px 12px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-size: 0.9rem;
+  color: var(--text);
+}
 .entry-checkbox {
   width: 22px;
   height: 22px;

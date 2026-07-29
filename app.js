@@ -718,6 +718,72 @@ async function reorderItems(dragId, targetId) {
   render();
 }
 
+// Reordering entries within one item group (or the Nezařazené bucket). Same
+// handle-based drag pattern as everything else; dropping is only meaningful
+// onto another entry card, so cross-group drops (which shouldn't happen since
+// each entry-list only contains its own group's cards) are naturally excluded.
+function attachEntryDragReorder(listEl) {
+  listEl.querySelectorAll('.entry-drag-handle').forEach(handle => {
+    const card = handle.closest('.entry-card');
+    if (!card) return;
+    let startY = 0, dragging = false;
+
+    handle.addEventListener('pointerdown', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      startY = e.clientY; dragging = true;
+      try { handle.setPointerCapture(e.pointerId); } catch (err) {}
+      card.classList.add('dragging');
+      if (navigator.vibrate) navigator.vibrate(12);
+    });
+
+    handle.addEventListener('pointermove', (e) => {
+      if (!dragging) return;
+      e.preventDefault();
+      const dy = e.clientY - startY;
+      card.style.transform = `translateY(${dy}px)`;
+    });
+
+    async function endDrag(e) {
+      if (!dragging) return;
+      dragging = false;
+      card.style.transform = '';
+      card.classList.remove('dragging');
+      card.style.pointerEvents = 'none';
+      const dropEl = document.elementFromPoint(e.clientX, e.clientY);
+      card.style.pointerEvents = '';
+      const dropCard = dropEl && dropEl.closest && dropEl.closest('.entry-card');
+      if (dropCard && dropCard !== card && listEl.contains(dropCard)) {
+        await reorderEntries(card.dataset.id, dropCard.dataset.id);
+      }
+    }
+
+    handle.addEventListener('pointerup', endDrag);
+    handle.addEventListener('pointercancel', () => {
+      dragging = false;
+      card.style.transform = '';
+      card.classList.remove('dragging');
+    });
+  });
+}
+
+async function reorderEntries(dragId, targetId) {
+  const dragEntry = state.allEntries.find(e => e.id === dragId);
+  const targetEntry = state.allEntries.find(e => e.id === targetId);
+  if (!dragEntry || !targetEntry) return;
+  if ((dragEntry.itemId || null) !== (targetEntry.itemId || null)) return;
+
+  const siblings = (state.entriesByCat[state.categoryId] || [])
+    .filter(e => (e.itemId || null) === (targetEntry.itemId || null) && e.id !== dragId);
+  const targetIdx = siblings.findIndex(e => e.id === targetId);
+  siblings.splice(targetIdx, 0, dragEntry);
+  siblings.forEach((e, i) => { e.order = i; });
+
+  await idbPutMany('entries', siblings);
+  await loadAll();
+  render();
+}
+
 // ===================== RENDER: CATEGORY =====================
 function renderCategory() {
   const cat = state.categories.find(c => c.id === state.categoryId);
@@ -757,6 +823,7 @@ function renderCategory() {
 
   const groupList = document.querySelector('.item-group-list');
   if (groupList) attachItemDragReorder(groupList);
+  document.querySelectorAll('.entry-list').forEach(list => attachEntryDragReorder(list));
 }
 
 function renderItemGroup(itemOrNull, entries) {
@@ -824,14 +891,17 @@ function renderEntryCard(e, showCat, showCheckbox) {
   const imgs = e.images || [];
   const vids = e.videos || [];
   const checked = state.bulkSelected.has(e.id);
+  const showDragHandle = !showCat && !showCheckbox;
+  const textStyle = e.textColor ? ` style="color:${e.textColor}"` : '';
   return `
     <div class="entry-card" data-id="${e.id}">
       <div class="entry-card-top">
         ${showCheckbox ? `<input type="checkbox" class="entry-checkbox" ${checked ? 'checked' : ''} onchange="toggleBulkSelect('${e.id}')" />` : ''}
         <div class="entry-card-main">
           ${showCat ? `<div class="entry-cat-tag">${escapeHtml(catName(e.categoryId))}</div>` : ''}
-          <div class="entry-text">${escapeHtml(e.text)}</div>
+          <div class="entry-text"${textStyle}>${escapeHtml(e.text)}</div>
         </div>
+        ${showDragHandle ? `<span class="entry-drag-handle" data-id="${e.id}">⠿</span>` : ''}
       </div>
       ${(imgs.length || vids.length) ? `<div class="media-row" id="media-${e.id}"></div>` : ''}
       ${showCheckbox ? '' : `
@@ -1400,7 +1470,7 @@ async function resetItemColor(itemId) {
 let formDraft = null;
 
 function openNewEntry(categoryId, itemId) {
-  formDraft = { id: uid(), categoryId, itemId: itemId || null, text: '', images: [], videos: [], isNew: true };
+  formDraft = { id: uid(), categoryId, itemId: itemId || null, text: '', textColor: null, images: [], videos: [], isNew: true };
   state.view = 'entry-form';
   render();
 }
@@ -1436,6 +1506,15 @@ async function renderEntryForm() {
         <button type="button" class="voice-btn" onclick="openVoiceRecorder()">🎙 Namluvit</button>
       </div>
       <textarea id="entryText" rows="8" placeholder="Popiš problém a jak se řeší…">${escapeHtml(formDraft.text)}</textarea>
+
+      <label class="field-label">Barva textu (nepovinné)</label>
+      <div class="entry-color-row">
+        <button type="button" class="modal-btn" style="margin:0;flex:1" onclick="setEntryTextColor(null)">Výchozí</button>
+        <button type="button" class="modal-btn" style="margin:0;flex:1" onclick="setEntryTextColor('#e8edf2')">Světlá</button>
+        <button type="button" class="modal-btn" style="margin:0;flex:1" onclick="setEntryTextColor('#f0a83c')">Zvýraznit</button>
+        <input type="color" id="entryTextColorPicker" value="${formDraft.textColor || '#e8edf2'}" onchange="setEntryTextColor(this.value)" />
+      </div>
+      <div class="entry-color-preview" id="entryColorPreview"${formDraft.textColor ? ` style="color:${formDraft.textColor}"` : ''}>Náhled textu takhle bude vypadat</div>
 
       <label class="field-label">Fotky</label>
       <div class="media-row" id="formImages"></div>
@@ -1520,6 +1599,14 @@ async function addVideos(event) {
 
 function removeImage(i) { formDraft.images.splice(i, 1); hydrateFormMedia(); }
 function removeVideo(i) { formDraft.videos.splice(i, 1); hydrateFormMedia(); }
+
+function setEntryTextColor(hex) {
+  formDraft.textColor = hex;
+  const preview = document.getElementById('entryColorPreview');
+  if (preview) preview.style.color = hex || '';
+  const picker = document.getElementById('entryTextColorPicker');
+  if (picker && hex) picker.value = hex;
+}
 
 // ===================== PDF EXPORT (for NotebookLM etc.) =====================
 function openHomeExportPicker() {
@@ -1930,6 +2017,7 @@ async function saveForm() {
     categoryId: formDraft.categoryId,
     itemId: formDraft.itemId || null,
     text: formDraft.text.trim(),
+    textColor: formDraft.textColor || null,
     images: formDraft.images.map(i => ({ type: i.type, src: i.src, mediaId: i.mediaId })),
     videos: formDraft.videos.map(i => ({ type: i.type, src: i.src, mediaId: i.mediaId })),
     order: formDraft.isNew ? (state.entriesByCat[formDraft.categoryId] || []).length : formDraft.order,
@@ -2037,7 +2125,7 @@ function render() {
 Object.assign(window, {
   openCategory, goHome, categoryBack, openHallDetail, openNewCategory, renameCategory,
   openNewEntry, openEditEntry, cancelForm, saveForm,
-  addImages, addVideos, removeImage, removeVideo,
+  addImages, addVideos, removeImage, removeVideo, setEntryTextColor,
   confirmDeleteEntry, clearSearch, openLightbox, openLightboxForEntry,
   openBackup, exportBackup, importBackup,
   toggleItem, openNewItem, renameItem, deleteItemGroup, deleteUnassigned,
