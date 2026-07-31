@@ -975,48 +975,70 @@ async function hydrateMediaRows() {
     let html = '';
     (entry.documents || []).forEach((doc, i) => {
       html += `<div class="doc-row" onclick="openDocument('${id}',${i})"><span class="doc-icon">${docIcon(doc.name)}</span><span class="doc-name">${escapeHtml(doc.name)}</span><span class="doc-open">⋯</span></div>`;
+      prepareDocFile(doc); // warm the cache ahead of time, don't wait for it
     });
     row.innerHTML = html;
   }
 }
 
+// Cache of prepared File objects, keyed by mediaId, built ahead of time while the
+// card renders — so tapping a document doesn't need to await IndexedDB first.
+// That matters because navigator.share() only works when called as a direct
+// result of a user gesture; any await beforehand (like an IndexedDB read) can
+// cause the browser to no longer treat the tap as "trusted", silently falling
+// back to a plain download instead of offering the app picker.
+const docFileCache = {};
+
+async function prepareDocFile(doc) {
+  if (docFileCache[doc.mediaId]) return docFileCache[doc.mediaId];
+  try {
+    const rec = doc.type === 'blob' ? await idbGet('media', doc.mediaId) : null;
+    const blob = rec ? rec.blob : await (await fetch(await resolveMediaUrl(doc))).blob();
+    const file = new File([blob], doc.name, { type: doc.mimeType || (rec && rec.type) || blob.type || 'application/octet-stream' });
+    docFileCache[doc.mediaId] = file;
+    return file;
+  } catch (err) {
+    return null;
+  }
+}
+
 // Tries to hand the file off to Android's "Open with…" / share sheet so it opens
 // directly in Excel/Word/a PDF reader/etc. Falls back to a plain download if the
-// Web Share API (with files) isn't available in this browser.
-async function openDocument(entryId, docIndex) {
+// Web Share API (with files) isn't available, or the file wasn't ready in time.
+// Deliberately NOT async up front — navigator.share() is called synchronously
+// within the click handler whenever the file is already cached, so the browser
+// still sees this as a direct response to the tap.
+function openDocument(entryId, docIndex) {
   const entry = state.allEntries.find(x => x.id === entryId);
   if (!entry) return;
   const doc = (entry.documents || [])[docIndex];
   if (!doc) return;
 
-  let file = null;
-  try {
-    const rec = doc.type === 'blob' ? await idbGet('media', doc.mediaId) : null;
-    const blob = rec ? rec.blob : await (await fetch(await resolveMediaUrl(doc))).blob();
-    file = new File([blob], doc.name, { type: doc.mimeType || (rec && rec.type) || blob.type || 'application/octet-stream' });
-  } catch (err) {
-    file = null;
+  const cached = docFileCache[doc.mediaId];
+  if (cached && navigator.canShare && navigator.share && navigator.canShare({ files: [cached] })) {
+    navigator.share({ files: [cached], title: doc.name }).catch(() => {
+      // user closed the share sheet or it failed — don't force a surprise download
+    });
+    return;
   }
 
-  if (file && navigator.canShare && navigator.share && navigator.canShare({ files: [file] })) {
-    try {
-      await navigator.share({ files: [file], title: doc.name });
-      return;
-    } catch (err) {
-      if (err && err.name === 'AbortError') return; // user closed the share sheet, don't force a download
-      // otherwise fall through to the plain-download fallback below
+  // File wasn't cached yet (rare — render just happened) or Web Share isn't
+  // supported here: fall back to a plain download.
+  (async () => {
+    const file = cached || await prepareDocFile(doc);
+    if (file && navigator.canShare && navigator.share && navigator.canShare({ files: [file] })) {
+      try { await navigator.share({ files: [file], title: doc.name }); return; } catch (err) { /* fall through */ }
     }
-  }
-
-  const url = await resolveMediaUrl(doc);
-  if (!url) return;
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = doc.name;
-  a.target = '_blank';
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
+    const url = await resolveMediaUrl(doc);
+    if (!url) return;
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = doc.name;
+    a.target = '_blank';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+  })();
 }
 
 async function openLightboxForEntry(entryId, startIndex) {
