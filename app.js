@@ -973,20 +973,25 @@ async function hydrateMediaRows() {
     const entry = state.allEntries.find(x => x.id === id);
     if (!entry) continue;
     let html = '';
-    (entry.documents || []).forEach((doc, i) => {
-      html += `<div class="doc-row" onclick="openDocument('${id}',${i})"><span class="doc-icon">${docIcon(doc.name)}</span><span class="doc-name">${escapeHtml(doc.name)}</span><span class="doc-open">⋯</span></div>`;
-      prepareDocFile(doc); // warm the cache ahead of time, don't wait for it
-    });
+    for (let i = 0; i < (entry.documents || []).length; i++) {
+      const doc = entry.documents[i];
+      const url = await resolveMediaUrl(doc);
+      prepareDocFile(doc); // warm the share cache ahead of time, don't wait for it
+      html += `<a class="doc-row" href="${url}" download="${escapeHtml(doc.name)}" target="_blank">
+        <span class="doc-icon">${docIcon(doc.name)}</span>
+        <span class="doc-name">${escapeHtml(doc.name)}</span>
+        <button class="doc-share-btn" onclick="event.preventDefault(); event.stopPropagation(); shareDocument('${id}',${i})" title="Otevřít v aplikaci">⤴</button>
+      </a>`;
+    }
     row.innerHTML = html;
   }
 }
 
 // Cache of prepared File objects, keyed by mediaId, built ahead of time while the
-// card renders — so tapping a document doesn't need to await IndexedDB first.
-// That matters because navigator.share() only works when called as a direct
-// result of a user gesture; any await beforehand (like an IndexedDB read) can
-// cause the browser to no longer treat the tap as "trusted", silently falling
-// back to a plain download instead of offering the app picker.
+// card renders, so the share button can call navigator.share() with as little
+// delay as possible after the tap (Web Share only works as a direct response to
+// a user gesture — any await right before calling it risks the browser no longer
+// treating it as trusted and silently doing nothing).
 const docFileCache = {};
 
 async function prepareDocFile(doc) {
@@ -1002,43 +1007,21 @@ async function prepareDocFile(doc) {
   }
 }
 
-// Tries to hand the file off to Android's "Open with…" / share sheet so it opens
-// directly in Excel/Word/a PDF reader/etc. Falls back to a plain download if the
-// Web Share API (with files) isn't available, or the file wasn't ready in time.
-// Deliberately NOT async up front — navigator.share() is called synchronously
-// within the click handler whenever the file is already cached, so the browser
-// still sees this as a direct response to the tap.
-function openDocument(entryId, docIndex) {
+// Tapping the document row itself always downloads it (plain, reliable <a download>
+// link rendered above — works everywhere, no JS needed for that part). This button
+// is a best-effort extra: if the file was already prepared and Web Share is
+// available, it offers Android's "Open with…" picker instead. If anything isn't
+// ready, it quietly does nothing rather than surprising the user with a second
+// download — the row itself is always there as the guaranteed fallback.
+function shareDocument(entryId, docIndex) {
   const entry = state.allEntries.find(x => x.id === entryId);
   if (!entry) return;
   const doc = (entry.documents || [])[docIndex];
   if (!doc) return;
-
   const cached = docFileCache[doc.mediaId];
   if (cached && navigator.canShare && navigator.share && navigator.canShare({ files: [cached] })) {
-    navigator.share({ files: [cached], title: doc.name }).catch(() => {
-      // user closed the share sheet or it failed — don't force a surprise download
-    });
-    return;
+    navigator.share({ files: [cached], title: doc.name }).catch(() => {});
   }
-
-  // File wasn't cached yet (rare — render just happened) or Web Share isn't
-  // supported here: fall back to a plain download.
-  (async () => {
-    const file = cached || await prepareDocFile(doc);
-    if (file && navigator.canShare && navigator.share && navigator.canShare({ files: [file] })) {
-      try { await navigator.share({ files: [file], title: doc.name }); return; } catch (err) { /* fall through */ }
-    }
-    const url = await resolveMediaUrl(doc);
-    if (!url) return;
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = doc.name;
-    a.target = '_blank';
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-  })();
 }
 
 async function openLightboxForEntry(entryId, startIndex) {
@@ -2256,7 +2239,7 @@ Object.assign(window, {
   openCategory, goHome, categoryBack, openHallDetail, openNewCategory, renameCategory,
   openNewEntry, openEditEntry, cancelForm, saveForm,
   addImages, addVideos, removeImage, removeVideo, setEntryTextColor,
-  addDocuments, removeDocument, openDocument,
+  addDocuments, removeDocument, shareDocument,
   confirmDeleteEntry, clearSearch, openLightbox, openLightboxForEntry,
   openBackup, exportBackup, importBackup,
   toggleItem, openNewItem, renameItem, deleteItemGroup, deleteUnassigned,

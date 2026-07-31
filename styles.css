@@ -958,7 +958,16 @@ textarea:focus { outline: 2px solid var(--accent); }
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.doc-open { color: var(--accent); flex-shrink: 0; }
+.doc-share-btn {
+  color: var(--accent);
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  width: 30px;
+  height: 30px;
+  font-size: 0.95rem;
+  flex-shrink: 0;
+}
 .doc-remove {
   background: var(--danger);
   color: #fff;
