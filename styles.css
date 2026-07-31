@@ -930,3 +930,41 @@ textarea:focus { outline: 2px solid var(--accent); }
   border-left-style: solid;
   border-left-color: var(--text-dim);
 }
+
+.doc-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 10px;
+}
+.doc-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  text-decoration: none;
+  color: var(--text);
+  font-size: 0.88rem;
+}
+.doc-icon { font-size: 1.1rem; flex-shrink: 0; }
+.doc-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.doc-open { color: var(--accent); flex-shrink: 0; }
+.doc-remove {
+  background: var(--danger);
+  color: #fff;
+  border: none;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  font-size: 0.75rem;
+  flex-shrink: 0;
+}

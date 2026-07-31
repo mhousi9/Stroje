@@ -890,6 +890,7 @@ function renderBulkBar() {
 function renderEntryCard(e, showCat, showCheckbox) {
   const imgs = e.images || [];
   const vids = e.videos || [];
+  const docs = e.documents || [];
   const checked = state.bulkSelected.has(e.id);
   const showDragHandle = !showCat && !showCheckbox;
   const textStyle = e.textColor ? ` style="color:${e.textColor}"` : '';
@@ -904,6 +905,7 @@ function renderEntryCard(e, showCat, showCheckbox) {
         ${showDragHandle ? `<span class="entry-drag-handle" data-id="${e.id}">⠿</span>` : ''}
       </div>
       ${(imgs.length || vids.length) ? `<div class="media-row" id="media-${e.id}"></div>` : ''}
+      ${docs.length ? `<div class="doc-list" id="docs-${e.id}"></div>` : ''}
       ${showCheckbox ? '' : `
         <div class="entry-actions">
           <button onclick="openEditEntry('${e.id}')">Upravit</button>
@@ -963,6 +965,20 @@ async function hydrateMediaRows() {
         dotEls.forEach((d, i) => d.classList.toggle('active', i === idx));
       }, 60);
     });
+  }
+
+  const docRows = document.querySelectorAll('.doc-list[id^="docs-"]');
+  for (const row of docRows) {
+    const id = row.id.replace('docs-', '');
+    const entry = state.allEntries.find(x => x.id === id);
+    if (!entry) continue;
+    let html = '';
+    for (const doc of (entry.documents || [])) {
+      const url = await resolveMediaUrl(doc);
+      if (!url) continue;
+      html += `<a class="doc-row" href="${url}" download="${escapeHtml(doc.name)}" target="_blank"><span class="doc-icon">${docIcon(doc.name)}</span><span class="doc-name">${escapeHtml(doc.name)}</span><span class="doc-open">⬇</span></a>`;
+    }
+    row.innerHTML = html;
   }
 }
 
@@ -1259,10 +1275,12 @@ async function mergeBulkSelected() {
   const mergedText = selected.map(e => e.text).filter(t => t && t.trim()).join('\n\n');
   const mergedImages = selected.flatMap(e => e.images || []);
   const mergedVideos = selected.flatMap(e => e.videos || []);
+  const mergedDocuments = selected.flatMap(e => e.documents || []);
 
   base.text = mergedText;
   base.images = mergedImages;
   base.videos = mergedVideos;
+  base.documents = mergedDocuments;
   base.updatedAt = Date.now();
   await idbPut('entries', base);
 
@@ -1470,7 +1488,7 @@ async function resetItemColor(itemId) {
 let formDraft = null;
 
 function openNewEntry(categoryId, itemId) {
-  formDraft = { id: uid(), categoryId, itemId: itemId || null, text: '', textColor: null, images: [], videos: [], isNew: true };
+  formDraft = { id: uid(), categoryId, itemId: itemId || null, text: '', textColor: null, images: [], videos: [], documents: [], isNew: true };
   state.view = 'entry-form';
   render();
 }
@@ -1480,6 +1498,7 @@ function openEditEntry(entryId) {
   if (!e) return;
   formDraft = JSON.parse(JSON.stringify(e));
   formDraft.isNew = false;
+  formDraft.documents = formDraft.documents || [];
   state.categoryId = e.categoryId;
   state.view = 'entry-form';
   render();
@@ -1537,6 +1556,14 @@ async function renderEntryForm() {
           <input type="file" accept="video/*" multiple style="display:none" onchange="addVideos(event)" />
         </label>
       </div>
+
+      <label class="field-label">Dokumenty</label>
+      <div class="doc-list" id="formDocs"></div>
+      <div class="media-add-row">
+        <label class="media-add-btn">📎 Přidat dokument
+          <input type="file" accept=".pdf,.doc,.docx,.xls,.xlsx,.ods,.odt,.csv,.txt,.rtf" multiple style="display:none" onchange="addDocuments(event)" />
+        </label>
+      </div>
     </main>
   `;
   document.getElementById('entryText').addEventListener('input', (e) => { formDraft.text = e.target.value; });
@@ -1564,6 +1591,7 @@ async function renderEntryForm() {
 async function hydrateFormMedia() {
   const imgWrap = document.getElementById('formImages');
   const vidWrap = document.getElementById('formVideos');
+  const docWrap = document.getElementById('formDocs');
   let imgHtml = '';
   for (let i = 0; i < formDraft.images.length; i++) {
     const url = await resolveMediaUrl(formDraft.images[i]);
@@ -1577,6 +1605,21 @@ async function hydrateFormMedia() {
     vidHtml += `<div class="thumb-wrap"><video class="thumb" src="${url}" controls></video><button class="thumb-remove" onclick="removeVideo(${i})">✕</button></div>`;
   }
   vidWrap.innerHTML = vidHtml || '<span class="hint">Zatím žádná videa</span>';
+
+  let docHtml = '';
+  for (let i = 0; i < (formDraft.documents || []).length; i++) {
+    const doc = formDraft.documents[i];
+    docHtml += `<div class="doc-row"><span class="doc-icon">${docIcon(doc.name)}</span><span class="doc-name">${escapeHtml(doc.name)}</span><button class="doc-remove" onclick="removeDocument(${i})">✕</button></div>`;
+  }
+  docWrap.innerHTML = docHtml || '<span class="hint">Zatím žádné dokumenty</span>';
+}
+
+function docIcon(name) {
+  const ext = (name || '').split('.').pop().toLowerCase();
+  if (['xls', 'xlsx', 'ods', 'csv'].includes(ext)) return '📊';
+  if (['doc', 'docx', 'odt', 'rtf'].includes(ext)) return '📝';
+  if (ext === 'pdf') return '📕';
+  return '📄';
 }
 
 async function addImages(event) {
@@ -1597,8 +1640,18 @@ async function addVideos(event) {
   await hydrateFormMedia();
 }
 
+async function addDocuments(event) {
+  const files = Array.from(event.target.files || []);
+  for (const f of files) {
+    const mediaId = await fileToBlobRecord(f);
+    formDraft.documents.push({ type: 'blob', mediaId, name: f.name, mimeType: f.type });
+  }
+  await hydrateFormMedia();
+}
+
 function removeImage(i) { formDraft.images.splice(i, 1); hydrateFormMedia(); }
 function removeVideo(i) { formDraft.videos.splice(i, 1); hydrateFormMedia(); }
+function removeDocument(i) { formDraft.documents.splice(i, 1); hydrateFormMedia(); }
 
 function setEntryTextColor(hex) {
   formDraft.textColor = hex;
@@ -1817,6 +1870,15 @@ async function buildAndSavePdf(sections, docTitle, filenameBase, progressEl) {
         doc.setTextColor(0, 0, 0);
         y += 16;
       }
+      if ((entry.documents || []).length) {
+        ensureSpace(14);
+        doc.setTextColor(140, 140, 140);
+        const docNames = entry.documents.map(d => d.name).join(', ');
+        const docLines = doc.splitTextToSize(`[Přiložené dokumenty (jen v appce): ${docNames}]`, contentW);
+        doc.text(docLines, margin, y);
+        doc.setTextColor(0, 0, 0);
+        y += docLines.length * 13 + 4;
+      }
       ensureSpace(10);
       y += 8;
     }
@@ -2007,7 +2069,7 @@ function cancelForm() {
 }
 
 async function saveForm() {
-  if (!formDraft.text.trim() && formDraft.images.length === 0 && formDraft.videos.length === 0) {
+  if (!formDraft.text.trim() && formDraft.images.length === 0 && formDraft.videos.length === 0 && (formDraft.documents || []).length === 0) {
     alert('Zadej alespoň text nebo přidej fotku.');
     return;
   }
@@ -2020,6 +2082,7 @@ async function saveForm() {
     textColor: formDraft.textColor || null,
     images: formDraft.images.map(i => ({ type: i.type, src: i.src, mediaId: i.mediaId })),
     videos: formDraft.videos.map(i => ({ type: i.type, src: i.src, mediaId: i.mediaId })),
+    documents: (formDraft.documents || []).map(d => ({ type: d.type, mediaId: d.mediaId, name: d.name, mimeType: d.mimeType })),
     order: formDraft.isNew ? (state.entriesByCat[formDraft.categoryId] || []).length : formDraft.order,
     createdAt: formDraft.isNew ? now : formDraft.createdAt,
     updatedAt: now
@@ -2062,13 +2125,14 @@ async function exportBackup() {
   const cats = await idbGetAll('categories');
   const entries = await idbGetAll('entries');
   const items = await idbGetAll('items');
+  const halls = await idbGetAll('halls');
   const media = await idbGetAll('media');
   const mediaEncoded = [];
   for (const m of media) {
     const b64 = await blobToBase64(m.blob);
     mediaEncoded.push({ id: m.id, type: m.type, data: b64 });
   }
-  const payload = { version: 2, exportedAt: new Date().toISOString(), categories: cats, entries, items, media: mediaEncoded };
+  const payload = { version: 3, exportedAt: new Date().toISOString(), categories: cats, entries, items, halls, media: mediaEncoded };
   const blob = new Blob([JSON.stringify(payload)], { type: 'application/json' });
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
@@ -2095,16 +2159,23 @@ async function importBackup(event) {
   await idbClear('categories');
   await idbClear('entries');
   await idbClear('items');
+  await idbClear('halls');
   await idbClear('media');
   await idbPutMany('categories', payload.categories || []);
   await idbPutMany('entries', payload.entries || []);
   await idbPutMany('items', payload.items || []);
+  await idbPutMany('halls', payload.halls || []);
+  if (!payload.halls) {
+    // old backup from before halls existed — let ensureDefaultHalls recreate them next load
+    await idbPut('meta', { key: 'defaultHallsCreated', value: false });
+  }
   const mediaRecords = [];
   for (const m of (payload.media || [])) {
     const blob = await (await fetch(m.data)).blob();
     mediaRecords.push({ id: m.id, blob, type: m.type });
   }
   await idbPutMany('media', mediaRecords);
+  await ensureDefaultHalls();
   await loadAll();
   document.querySelectorAll('.modal-overlay').forEach(el => el.remove());
   goHome();
@@ -2126,6 +2197,7 @@ Object.assign(window, {
   openCategory, goHome, categoryBack, openHallDetail, openNewCategory, renameCategory,
   openNewEntry, openEditEntry, cancelForm, saveForm,
   addImages, addVideos, removeImage, removeVideo, setEntryTextColor,
+  addDocuments, removeDocument,
   confirmDeleteEntry, clearSearch, openLightbox, openLightboxForEntry,
   openBackup, exportBackup, importBackup,
   toggleItem, openNewItem, renameItem, deleteItemGroup, deleteUnassigned,
