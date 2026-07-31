@@ -948,6 +948,7 @@ textarea:focus { outline: 2px solid var(--accent); }
   text-decoration: none;
   color: var(--text);
   font-size: 0.88rem;
+  cursor: pointer;
 }
 .doc-icon { font-size: 1.1rem; flex-shrink: 0; }
 .doc-name {

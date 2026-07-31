@@ -973,13 +973,50 @@ async function hydrateMediaRows() {
     const entry = state.allEntries.find(x => x.id === id);
     if (!entry) continue;
     let html = '';
-    for (const doc of (entry.documents || [])) {
-      const url = await resolveMediaUrl(doc);
-      if (!url) continue;
-      html += `<a class="doc-row" href="${url}" download="${escapeHtml(doc.name)}" target="_blank"><span class="doc-icon">${docIcon(doc.name)}</span><span class="doc-name">${escapeHtml(doc.name)}</span><span class="doc-open">⬇</span></a>`;
-    }
+    (entry.documents || []).forEach((doc, i) => {
+      html += `<div class="doc-row" onclick="openDocument('${id}',${i})"><span class="doc-icon">${docIcon(doc.name)}</span><span class="doc-name">${escapeHtml(doc.name)}</span><span class="doc-open">⋯</span></div>`;
+    });
     row.innerHTML = html;
   }
+}
+
+// Tries to hand the file off to Android's "Open with…" / share sheet so it opens
+// directly in Excel/Word/a PDF reader/etc. Falls back to a plain download if the
+// Web Share API (with files) isn't available in this browser.
+async function openDocument(entryId, docIndex) {
+  const entry = state.allEntries.find(x => x.id === entryId);
+  if (!entry) return;
+  const doc = (entry.documents || [])[docIndex];
+  if (!doc) return;
+
+  let file = null;
+  try {
+    const rec = doc.type === 'blob' ? await idbGet('media', doc.mediaId) : null;
+    const blob = rec ? rec.blob : await (await fetch(await resolveMediaUrl(doc))).blob();
+    file = new File([blob], doc.name, { type: doc.mimeType || (rec && rec.type) || blob.type || 'application/octet-stream' });
+  } catch (err) {
+    file = null;
+  }
+
+  if (file && navigator.canShare && navigator.share && navigator.canShare({ files: [file] })) {
+    try {
+      await navigator.share({ files: [file], title: doc.name });
+      return;
+    } catch (err) {
+      if (err && err.name === 'AbortError') return; // user closed the share sheet, don't force a download
+      // otherwise fall through to the plain-download fallback below
+    }
+  }
+
+  const url = await resolveMediaUrl(doc);
+  if (!url) return;
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = doc.name;
+  a.target = '_blank';
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
 }
 
 async function openLightboxForEntry(entryId, startIndex) {
@@ -2197,7 +2234,7 @@ Object.assign(window, {
   openCategory, goHome, categoryBack, openHallDetail, openNewCategory, renameCategory,
   openNewEntry, openEditEntry, cancelForm, saveForm,
   addImages, addVideos, removeImage, removeVideo, setEntryTextColor,
-  addDocuments, removeDocument,
+  addDocuments, removeDocument, openDocument,
   confirmDeleteEntry, clearSearch, openLightbox, openLightboxForEntry,
   openBackup, exportBackup, importBackup,
   toggleItem, openNewItem, renameItem, deleteItemGroup, deleteUnassigned,
