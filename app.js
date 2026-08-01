@@ -994,12 +994,30 @@ async function hydrateMediaRows() {
 // treating it as trusted and silently doing nothing).
 const docFileCache = {};
 
+const MIME_BY_EXT = {
+  pdf: 'application/pdf',
+  doc: 'application/msword',
+  docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  xls: 'application/vnd.ms-excel',
+  xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  ods: 'application/vnd.oasis.opendocument.spreadsheet',
+  odt: 'application/vnd.oasis.opendocument.text',
+  csv: 'text/csv',
+  txt: 'text/plain',
+  rtf: 'application/rtf'
+};
+
+function mimeForDoc(doc, fallbackType) {
+  const ext = (doc.name || '').split('.').pop().toLowerCase();
+  return doc.mimeType || MIME_BY_EXT[ext] || fallbackType || 'application/octet-stream';
+}
+
 async function prepareDocFile(doc) {
   if (docFileCache[doc.mediaId]) return docFileCache[doc.mediaId];
   try {
     const rec = doc.type === 'blob' ? await idbGet('media', doc.mediaId) : null;
     const blob = rec ? rec.blob : await (await fetch(await resolveMediaUrl(doc))).blob();
-    const file = new File([blob], doc.name, { type: doc.mimeType || (rec && rec.type) || blob.type || 'application/octet-stream' });
+    const file = new File([blob], doc.name, { type: mimeForDoc(doc, (rec && rec.type) || blob.type) });
     docFileCache[doc.mediaId] = file;
     return file;
   } catch (err) {
@@ -1009,19 +1027,36 @@ async function prepareDocFile(doc) {
 
 // Tapping the document row itself always downloads it (plain, reliable <a download>
 // link rendered above — works everywhere, no JS needed for that part). This button
-// is a best-effort extra: if the file was already prepared and Web Share is
-// available, it offers Android's "Open with…" picker instead. If anything isn't
-// ready, it quietly does nothing rather than surprising the user with a second
-// download — the row itself is always there as the guaranteed fallback.
+// is a best-effort extra: if Web Share is available it offers Android's app picker
+// instead. Unlike before, this now tells you when it can't — silently doing
+// nothing was more confusing than a short message.
 function shareDocument(entryId, docIndex) {
   const entry = state.allEntries.find(x => x.id === entryId);
   if (!entry) return;
   const doc = (entry.documents || [])[docIndex];
   if (!doc) return;
-  const cached = docFileCache[doc.mediaId];
-  if (cached && navigator.canShare && navigator.share && navigator.canShare({ files: [cached] })) {
-    navigator.share({ files: [cached], title: doc.name }).catch(() => {});
+
+  if (!navigator.share || !navigator.canShare) {
+    alert('Sdílení souborů tenhle prohlížeč nepodporuje. Použij stažení (klepnutím na řádek) a pak otevři přes oznámení o staženém souboru.');
+    return;
   }
+
+  const cached = docFileCache[doc.mediaId];
+  if (!cached) {
+    alert('Soubor se ještě připravuje, zkus to prosím za chvíli znovu.');
+    prepareDocFile(doc);
+    return;
+  }
+
+  if (!navigator.canShare({ files: [cached] })) {
+    alert('Tenhle typ souboru se přes sdílení odeslat nepovedlo. Použij stažení (klepnutím na řádek) a pak otevři přes oznámení o staženém souboru.');
+    return;
+  }
+
+  navigator.share({ files: [cached], title: doc.name }).catch((err) => {
+    if (err && err.name === 'AbortError') return; // user just closed the picker
+    alert('Sdílení se nepovedlo. Použij stažení (klepnutím na řádek) a pak otevři přes oznámení o staženém souboru.');
+  });
 }
 
 async function openLightboxForEntry(entryId, startIndex) {
